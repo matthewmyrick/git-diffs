@@ -62,36 +62,43 @@ git-diffs --base HEAD~5
 
 ## Keyboard Shortcuts
 
-### Navigation
+### File List (Left Pane)
 
 | Key | Action |
 |-----|--------|
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
-| `←` / `h` | Switch to left pane |
-| `→` / `l` | Switch to right pane |
-| `Tab` | Cycle between panes |
-| `1` | Jump to files pane |
-| `2` | Jump to diff pane |
+| `Enter` | Select file and view diff |
+| `[` / `]` | Switch view mode (Folder / Type / Raw) |
+| `/` | Search files (fuzzy) |
+| `Esc` | Clear search |
 
-### Actions
+### Diff View (Right Pane)
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Select file / confirm |
-| `/` | Fuzzy search files |
-| `\` | Search content |
-| `Esc` | Close search / cancel |
+| `↑` / `k` | Scroll up |
+| `↓` / `j` | Scroll down |
+| `Esc` | Return to file list |
+
+### Global
+
+| Key | Action |
+|-----|--------|
+| `←` / `→` | Switch between panes |
 | `q` / `Ctrl+C` | Quit |
-
-### Scrolling
-
-| Key | Action |
-|-----|--------|
 | `PgUp` / `Ctrl+U` | Page up |
 | `PgDn` / `Ctrl+D` | Page down |
 | `Home` / `g` | Go to top |
 | `End` / `G` | Go to bottom |
+
+## View Modes
+
+The file list supports three view modes (switch with `[` and `]`):
+
+- **Folder** (default) - Files grouped by directory
+- **Type** - Files grouped by change type (Modified, Added, Deleted)
+- **Raw** - Flat list of all files
 
 ## Requirements
 

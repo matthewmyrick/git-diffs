@@ -11,7 +11,6 @@ import (
 	"github.com/matthewmyrick/git-diffs/internal/ui"
 	"github.com/matthewmyrick/git-diffs/internal/ui/diffview"
 	"github.com/matthewmyrick/git-diffs/internal/ui/filelist"
-	"github.com/matthewmyrick/git-diffs/internal/ui/search"
 )
 
 // Pane represents which pane is currently focused
@@ -22,14 +21,6 @@ const (
 	PaneDiffView
 )
 
-// AppState represents the application state
-type AppState int
-
-const (
-	StateNormal AppState = iota
-	StateSearch
-)
-
 // Model is the main application model
 type Model struct {
 	repo          *git.Repo
@@ -38,9 +29,7 @@ type Model struct {
 	files         []git.ChangedFile
 	fileList      filelist.Model
 	diffView      diffview.Model
-	search        search.Model
 	focusedPane   Pane
-	state         AppState
 	width         int
 	height        int
 	err           error
@@ -65,13 +54,14 @@ type diffLoadedMsg struct {
 
 // New creates a new application model
 func New(baseBranch string) Model {
+	fl := filelist.New()
+	fl.SetFocused(true) // Start with file list focused
+
 	return Model{
 		baseBranch:  baseBranch,
-		fileList:    filelist.New(),
+		fileList:    fl,
 		diffView:    diffview.New(),
-		search:      search.New(),
 		focusedPane: PaneFileList,
-		state:       StateNormal,
 		keys:        ui.DefaultKeyMap(),
 	}
 }
@@ -100,14 +90,12 @@ func (m Model) loadRepo() tea.Cmd {
 		if baseBranch == "" {
 			baseBranch, err = repo.GetDefaultBranch()
 			if err != nil {
-				// If we can't find default branch, try to diff against HEAD
 				baseBranch = "HEAD"
 			}
 		}
 
 		files, err := repo.GetChangedFiles(baseBranch, "HEAD")
 		if err != nil {
-			// Try diffing uncommitted changes
 			files, err = repo.GetChangedFiles(baseBranch, "")
 			if err != nil {
 				return filesLoadedMsg{err: err}
@@ -131,7 +119,6 @@ func (m Model) loadDiff(filePath string) tea.Cmd {
 
 		diff, err := m.repo.GetFileDiff(m.baseBranch, "HEAD", filePath)
 		if err != nil {
-			// Try without HEAD
 			diff, err = m.repo.GetFileDiff(m.baseBranch, "", filePath)
 			if err != nil {
 				return diffLoadedMsg{err: err, filePath: filePath}
@@ -156,70 +143,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 
 	case tea.KeyMsg:
-		// Handle search mode separately
-		if m.state == StateSearch {
-			return m.handleSearchInput(msg)
+		// Global quit
+		if key.Matches(msg, m.keys.Quit) && !m.fileList.IsSearching() {
+			return m, tea.Quit
 		}
 
-		// Global keys
-		switch {
-		case key.Matches(msg, m.keys.Quit):
-			return m, tea.Quit
-
-		case key.Matches(msg, m.keys.Search):
-			m.state = StateSearch
-			m.search.SetMode(search.ModeFile)
-			m.search.SetFiles(m.files)
-			m.search.SetFocused(true)
-			return m, nil
-
-		case key.Matches(msg, m.keys.SearchContent):
-			m.state = StateSearch
-			m.search.SetMode(search.ModeContent)
-			m.search.SetFiles(m.files)
-			m.search.SetFocused(true)
-			return m, nil
-
-		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Right):
-			m.cycleFocus(1)
-
-		case key.Matches(msg, m.keys.ShiftTab), key.Matches(msg, m.keys.Left):
-			m.cycleFocus(-1)
-
-		case key.Matches(msg, m.keys.Pane1):
+		// Escape to go back to file list from diff view
+		if key.Matches(msg, m.keys.Escape) && m.focusedPane == PaneDiffView {
 			m.setFocus(PaneFileList)
+			return m, nil
+		}
 
-		case key.Matches(msg, m.keys.Pane2):
+		// Arrow keys for pane switching (only left/right, not up/down)
+		if !m.fileList.IsSearching() {
+			if key.Matches(msg, m.keys.Right) && m.focusedPane == PaneFileList {
+				m.setFocus(PaneDiffView)
+				return m, nil
+			}
+			if key.Matches(msg, m.keys.Left) && m.focusedPane == PaneDiffView {
+				m.setFocus(PaneFileList)
+				return m, nil
+			}
+		}
+
+		// Pass to focused pane
+		switch m.focusedPane {
+		case PaneFileList:
+			var cmd tea.Cmd
+			m.fileList, cmd = m.fileList.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+
+		case PaneDiffView:
+			var cmd tea.Cmd
+			m.diffView, cmd = m.diffView.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
+	case filelist.FileSelectMsg:
+		// User pressed Enter on a file - load diff and switch to diff pane
+		if msg.File != nil {
 			m.setFocus(PaneDiffView)
-
-		case key.Matches(msg, m.keys.Enter):
-			if m.focusedPane == PaneFileList {
-				if file := m.fileList.SelectedFile(); file != nil {
-					cmds = append(cmds, m.loadDiff(file.Path))
-				}
-			}
-
-		default:
-			// Pass to focused pane
-			switch m.focusedPane {
-			case PaneFileList:
-				var cmd tea.Cmd
-				m.fileList, cmd = m.fileList.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-				// Auto-load diff when selection changes
-				if file := m.fileList.SelectedFile(); file != nil && file.Path != m.diffView.FilePath() {
-					cmds = append(cmds, m.loadDiff(file.Path))
-				}
-
-			case PaneDiffView:
-				var cmd tea.Cmd
-				m.diffView, cmd = m.diffView.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
-			}
+			cmds = append(cmds, m.loadDiff(msg.File.Path))
 		}
 
 	case filesLoadedMsg:
@@ -245,55 +213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.diffView.SetDiff(msg.diff, msg.filePath)
 		m.err = nil
-
-	case search.SelectFileMsg:
-		// User selected a file from search
-		m.state = StateNormal
-		m.search.SetFocused(false)
-		m.setFocus(PaneFileList)
-
-		// Find and select the file
-		for i, f := range m.files {
-			if f.Path == msg.Path {
-				m.fileList.SetCursor(i)
-				cmds = append(cmds, m.loadDiff(f.Path))
-				break
-			}
-		}
 	}
 
 	return m, tea.Batch(cmds...)
-}
-
-func (m *Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if key.Matches(msg, m.keys.Escape) {
-		m.state = StateNormal
-		m.search.SetFocused(false)
-		return m, nil
-	}
-
-	var cmd tea.Cmd
-	m.search, cmd = m.search.Update(msg)
-
-	// Check if search was closed
-	if !m.search.IsFocused() {
-		m.state = StateNormal
-	}
-
-	return m, cmd
-}
-
-func (m *Model) cycleFocus(direction int) {
-	switch m.focusedPane {
-	case PaneFileList:
-		if direction > 0 {
-			m.setFocus(PaneDiffView)
-		}
-	case PaneDiffView:
-		if direction < 0 {
-			m.setFocus(PaneFileList)
-		}
-	}
 }
 
 func (m *Model) setFocus(pane Pane) {
@@ -309,14 +231,13 @@ func (m *Model) updateLayout() {
 
 	// File list takes 30% width, diff view takes 70%
 	fileListWidth := m.width * 30 / 100
-	if fileListWidth < 20 {
-		fileListWidth = 20
+	if fileListWidth < 25 {
+		fileListWidth = 25
 	}
 	diffViewWidth := m.width - fileListWidth
 
 	m.fileList.SetSize(fileListWidth, contentHeight)
 	m.diffView.SetSize(diffViewWidth, contentHeight)
-	m.search.SetSize(m.width-4, m.height/2)
 }
 
 // View implements tea.Model
@@ -347,11 +268,6 @@ func (m Model) View() string {
 	// Footer
 	b.WriteString(m.renderFooter())
 
-	// Overlay search if active
-	if m.state == StateSearch {
-		return m.overlaySearch(b.String())
-	}
-
 	return b.String()
 }
 
@@ -371,7 +287,12 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderFooter() string {
-	help := "↑↓ scroll  Tab switch pane  / search files  \\ search content  Enter select  q quit"
+	var help string
+	if m.focusedPane == PaneFileList {
+		help = "↑↓ navigate  [ ] switch view  / search  Enter select  ←→ switch pane  q quit"
+	} else {
+		help = "↑↓ scroll  ←→ switch pane  Esc back to files  q quit"
+	}
 	return ui.FooterStyle.
 		Width(m.width).
 		Render(help)
@@ -391,20 +312,5 @@ func (m Model) renderError() string {
 		lipgloss.Center,
 		lipgloss.Center,
 		errorBox,
-	)
-}
-
-func (m Model) overlaySearch(base string) string {
-	searchView := m.search.View()
-
-	// Center the search modal
-	return lipgloss.Place(
-		m.width,
-		m.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		searchView,
-		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(lipgloss.Color("#000000")),
 	)
 }
