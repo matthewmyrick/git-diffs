@@ -4,25 +4,27 @@ import "github.com/charmbracelet/bubbles/key"
 
 // KeyMap defines all the keybindings for the application
 type KeyMap struct {
-	Up          key.Binding
-	Down        key.Binding
-	Left        key.Binding
-	Right       key.Binding
-	Enter       key.Binding
-	Tab         key.Binding
-	ShiftTab    key.Binding
-	Pane1       key.Binding
-	Pane2       key.Binding
-	Search      key.Binding
+	Up            key.Binding
+	Down          key.Binding
+	Left          key.Binding
+	Right         key.Binding
+	Enter         key.Binding
+	Tab           key.Binding
+	ShiftTab      key.Binding
+	Pane1         key.Binding
+	Pane2         key.Binding
+	Search        key.Binding
 	SearchContent key.Binding
-	Escape      key.Binding
-	Quit        key.Binding
-	PageUp      key.Binding
-	PageDown    key.Binding
-	Home        key.Binding
-	End         key.Binding
-	BracketLeft key.Binding
-	BracketRight key.Binding
+	Escape        key.Binding
+	Quit          key.Binding
+	PageUp        key.Binding
+	PageDown      key.Binding
+	Home          key.Binding
+	End           key.Binding
+	BracketLeft   key.Binding
+	BracketRight  key.Binding
+	PaneLeft      key.Binding
+	PaneRight     key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings
@@ -37,12 +39,12 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("↓/j", "down"),
 		),
 		Left: key.NewBinding(
-			key.WithKeys("left", "h"),
-			key.WithHelp("←/h", "left pane"),
+			key.WithKeys("left"),
+			key.WithHelp("←", "collapse folder"),
 		),
 		Right: key.NewBinding(
-			key.WithKeys("right", "l"),
-			key.WithHelp("→/l", "right pane"),
+			key.WithKeys("right"),
+			key.WithHelp("→", "expand folder"),
 		),
 		Enter: key.NewBinding(
 			key.WithKeys("enter"),
@@ -103,6 +105,14 @@ func DefaultKeyMap() KeyMap {
 		BracketRight: key.NewBinding(
 			key.WithKeys("]"),
 			key.WithHelp("]", "next tab"),
+		),
+		PaneLeft: key.NewBinding(
+			key.WithKeys("ctrl+g"),
+			key.WithHelp("ctrl+g", "left pane"),
+		),
+		PaneRight: key.NewBinding(
+			key.WithKeys("ctrl+h"),
+			key.WithHelp("ctrl+h", "right pane"),
 		),
 	}
 }

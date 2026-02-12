@@ -154,14 +154,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Arrow keys for pane switching (only left/right, not up/down)
+		// Pane switching with ctrl+g (left) and ctrl+h (right) - wraps around
 		if !m.fileList.IsSearching() {
-			if key.Matches(msg, m.keys.Right) && m.focusedPane == PaneFileList {
-				m.setFocus(PaneDiffView)
+			if key.Matches(msg, m.keys.PaneRight) {
+				// Wrap around: FileList -> DiffView -> FileList
+				if m.focusedPane == PaneFileList {
+					m.setFocus(PaneDiffView)
+				} else {
+					m.setFocus(PaneFileList)
+				}
 				return m, nil
 			}
-			if key.Matches(msg, m.keys.Left) && m.focusedPane == PaneDiffView {
-				m.setFocus(PaneFileList)
+			if key.Matches(msg, m.keys.PaneLeft) {
+				// Wrap around: DiffView -> FileList -> DiffView
+				if m.focusedPane == PaneDiffView {
+					m.setFocus(PaneFileList)
+				} else {
+					m.setFocus(PaneDiffView)
+				}
 				return m, nil
 			}
 		}
@@ -289,9 +299,9 @@ func (m Model) renderHeader() string {
 func (m Model) renderFooter() string {
 	var help string
 	if m.focusedPane == PaneFileList {
-		help = "↑↓ navigate  [ ] switch view  / search  Enter select  ←→ switch pane  q quit"
+		help = "↑↓ navigate  ←→ expand/collapse  [ ] view  / search  Enter select  ^g/^h pane  q quit"
 	} else {
-		help = "↑↓ scroll  ←→ switch pane  Esc back to files  q quit"
+		help = "↑↓ navigate  [ ] view  ^g/^h pane  Esc files  q quit"
 	}
 	return ui.FooterStyle.
 		Width(m.width).

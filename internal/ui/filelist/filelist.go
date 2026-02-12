@@ -450,6 +450,42 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.offset = m.cursor - visibleHeight + 1
 			}
 
+		case key.Matches(msg, keys.Right):
+			// Right arrow expands folder if on a collapsed folder
+			if m.cursor >= 0 && m.cursor < len(m.displayItems) {
+				item := m.displayItems[m.cursor]
+				if item.IsFolder && !item.IsExpanded {
+					m.expandedDirs[item.FolderPath] = true
+					m.rebuildDisplayItems()
+					// Find the folder again after rebuild
+					for i, di := range m.displayItems {
+						if di.IsFolder && di.FolderPath == item.FolderPath {
+							m.cursor = i
+							m.selected = i
+							break
+						}
+					}
+				}
+			}
+
+		case key.Matches(msg, keys.Left):
+			// Left arrow collapses folder if on an expanded folder
+			if m.cursor >= 0 && m.cursor < len(m.displayItems) {
+				item := m.displayItems[m.cursor]
+				if item.IsFolder && item.IsExpanded {
+					m.expandedDirs[item.FolderPath] = false
+					m.rebuildDisplayItems()
+					// Find the folder again after rebuild
+					for i, di := range m.displayItems {
+						if di.IsFolder && di.FolderPath == item.FolderPath {
+							m.cursor = i
+							m.selected = i
+							break
+						}
+					}
+				}
+			}
+
 		case key.Matches(msg, keys.Enter):
 			if m.cursor >= 0 && m.cursor < len(m.displayItems) {
 				item := m.displayItems[m.cursor]
