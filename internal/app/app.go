@@ -5,12 +5,14 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/matthewmyrick/git-diffs/internal/git"
 	"github.com/matthewmyrick/git-diffs/internal/ui"
 	"github.com/matthewmyrick/git-diffs/internal/ui/diffview"
 	"github.com/matthewmyrick/git-diffs/internal/ui/filelist"
+	"github.com/matthewmyrick/git-diffs/internal/ui/searchoverlay"
 )
 
 // Pane represents which pane is currently focused
@@ -29,6 +31,7 @@ type Model struct {
 	files         []git.ChangedFile
 	fileList      filelist.Model
 	diffView      diffview.Model
+	searchOverlay searchoverlay.Model
 	focusedPane   Pane
 	width         int
 	height        int
@@ -58,11 +61,12 @@ func New(baseBranch string) Model {
 	fl.SetFocused(true) // Start with file list focused
 
 	return Model{
-		baseBranch:  baseBranch,
-		fileList:    fl,
-		diffView:    diffview.New(),
-		focusedPane: PaneFileList,
-		keys:        ui.DefaultKeyMap(),
+		baseBranch:    baseBranch,
+		fileList:      fl,
+		diffView:      diffview.New(),
+		searchOverlay: searchoverlay.New(),
+		focusedPane:   PaneFileList,
+		keys:          ui.DefaultKeyMap(),
 	}
 }
 
@@ -141,11 +145,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateLayout()
+		m.searchOverlay.SetSize(m.width, m.height)
+
+	case searchoverlay.CloseMsg:
+		// Search overlay closed
+		return m, nil
+
+	case searchoverlay.JumpToLineMsg:
+		// Jump to the selected line in the diff view
+		m.diffView.JumpToLine(msg.OrigIdx)
+		m.setFocus(PaneDiffView)
+		return m, nil
 
 	case tea.KeyMsg:
+		// If search overlay is active, pass all keys to it
+		if m.searchOverlay.IsActive() {
+			var cmd tea.Cmd
+			m.searchOverlay, cmd = m.searchOverlay.Update(msg)
+			return m, cmd
+		}
+
 		// Global quit
 		if key.Matches(msg, m.keys.Quit) && !m.fileList.IsSearching() {
 			return m, tea.Quit
+		}
+
+		// Content search with / when in diff pane
+		if key.Matches(msg, m.keys.Search) && m.focusedPane == PaneDiffView {
+			m.openSearchOverlay()
+			return m, textinput.Blink
 		}
 
 		// Escape to go back to file list from diff view
@@ -228,6 +256,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m *Model) openSearchOverlay() {
+	// Get searchable lines from the diff view
+	diffLines := m.diffView.GetSearchableLines()
+
+	// Convert to search overlay format
+	var searchLines []searchoverlay.SearchLine
+	for _, line := range diffLines {
+		searchLines = append(searchLines, searchoverlay.SearchLine{
+			LineNum: line.LineNum,
+			Content: line.Content,
+			Type:    line.Type,
+			OrigIdx: line.OrigIdx,
+		})
+	}
+
+	m.searchOverlay.SetLines(searchLines)
+	m.searchOverlay.SetViewMode(m.diffView.GetViewMode())
+	m.searchOverlay.SetSize(m.width, m.height)
+	m.searchOverlay.Open()
+}
+
 func (m *Model) setFocus(pane Pane) {
 	m.focusedPane = pane
 	m.fileList.SetFocused(pane == PaneFileList)
@@ -278,7 +327,14 @@ func (m Model) View() string {
 	// Footer
 	b.WriteString(m.renderFooter())
 
-	return b.String()
+	baseView := b.String()
+
+	// Render search overlay on top if active
+	if m.searchOverlay.IsActive() {
+		return m.searchOverlay.RenderOverlay(baseView)
+	}
+
+	return baseView
 }
 
 func (m Model) renderHeader() string {
@@ -299,9 +355,9 @@ func (m Model) renderHeader() string {
 func (m Model) renderFooter() string {
 	var help string
 	if m.focusedPane == PaneFileList {
-		help = "↑↓ navigate  ←→ expand/collapse  [ ] view  / search  Enter select  ^g/^h pane  q quit"
+		help = "↑↓ navigate  ←→ expand/collapse  [ ] view  / search files  Enter select  ^g/^h pane  q quit"
 	} else {
-		help = "↑↓ navigate  [ ] view  ^g/^h pane  Esc files  q quit"
+		help = "↑↓ navigate  [ ] view  / search content  ^g/^h pane  Esc files  q quit"
 	}
 	return ui.FooterStyle.
 		Width(m.width).

@@ -684,3 +684,106 @@ func (m *Model) Clear() {
 	m.lines = nil
 	m.offset = 0
 }
+
+// GetViewMode returns the current view mode as a string
+func (m Model) GetViewMode() string {
+	switch m.viewMode {
+	case ViewNew:
+		return "new"
+	case ViewOld:
+		return "old"
+	default:
+		return "both"
+	}
+}
+
+// GetSearchableLines returns lines for searching based on current view mode
+func (m Model) GetSearchableLines() []SearchableLine {
+	var result []SearchableLine
+
+	for i, line := range m.lines {
+		switch m.viewMode {
+		case ViewBoth:
+			// Include both sides
+			if line.OldContent != "" || line.OldLineNum > 0 {
+				result = append(result, SearchableLine{
+					LineNum: line.OldLineNum,
+					Content: line.OldContent,
+					Type:    lineTypeToString(line.OldType),
+					OrigIdx: i,
+				})
+			}
+			if line.NewContent != "" || line.NewLineNum > 0 {
+				if line.NewContent != line.OldContent || line.NewType != line.OldType {
+					result = append(result, SearchableLine{
+						LineNum: line.NewLineNum,
+						Content: line.NewContent,
+						Type:    lineTypeToString(line.NewType),
+						OrigIdx: i,
+					})
+				}
+			}
+		case ViewNew:
+			if line.NewType == git.DiffLineAddition || line.NewType == git.DiffLineContext || line.NewType == git.DiffLineHeader {
+				result = append(result, SearchableLine{
+					LineNum: line.NewLineNum,
+					Content: line.NewContent,
+					Type:    lineTypeToString(line.NewType),
+					OrigIdx: i,
+				})
+			}
+		case ViewOld:
+			if line.OldType == git.DiffLineDeletion || line.OldType == git.DiffLineContext || line.OldType == git.DiffLineHeader {
+				result = append(result, SearchableLine{
+					LineNum: line.OldLineNum,
+					Content: line.OldContent,
+					Type:    lineTypeToString(line.OldType),
+					OrigIdx: i,
+				})
+			}
+		}
+	}
+
+	return result
+}
+
+// SearchableLine represents a line that can be searched
+type SearchableLine struct {
+	LineNum int
+	Content string
+	Type    string
+	OrigIdx int
+}
+
+func lineTypeToString(t git.DiffLineType) string {
+	switch t {
+	case git.DiffLineAddition:
+		return "add"
+	case git.DiffLineDeletion:
+		return "del"
+	case git.DiffLineHeader:
+		return "header"
+	default:
+		return "context"
+	}
+}
+
+// JumpToLine jumps to a specific line index
+func (m *Model) JumpToLine(idx int) {
+	if idx < 0 || idx >= len(m.lines) {
+		return
+	}
+	m.cursor = idx
+	visibleHeight := m.visibleLines()
+	// Center the line in view
+	m.offset = idx - visibleHeight/2
+	if m.offset < 0 {
+		m.offset = 0
+	}
+	if m.offset > len(m.lines)-visibleHeight {
+		m.offset = len(m.lines) - visibleHeight
+		if m.offset < 0 {
+			m.offset = 0
+		}
+	}
+}
