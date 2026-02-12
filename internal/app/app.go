@@ -12,6 +12,7 @@ import (
 	"github.com/matthewmyrick/git-diffs/internal/ui"
 	"github.com/matthewmyrick/git-diffs/internal/ui/diffview"
 	"github.com/matthewmyrick/git-diffs/internal/ui/filelist"
+	"github.com/matthewmyrick/git-diffs/internal/ui/filepicker"
 	"github.com/matthewmyrick/git-diffs/internal/ui/searchoverlay"
 )
 
@@ -32,6 +33,7 @@ type Model struct {
 	fileList      filelist.Model
 	diffView      diffview.Model
 	searchOverlay searchoverlay.Model
+	filePicker    filepicker.Model
 	focusedPane   Pane
 	width         int
 	height        int
@@ -65,6 +67,7 @@ func New(baseBranch string) Model {
 		fileList:      fl,
 		diffView:      diffview.New(),
 		searchOverlay: searchoverlay.New(),
+		filePicker:    filepicker.New(),
 		focusedPane:   PaneFileList,
 		keys:          ui.DefaultKeyMap(),
 	}
@@ -146,6 +149,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.updateLayout()
 		m.searchOverlay.SetSize(m.width, m.height)
+		m.filePicker.SetSize(m.width, m.height)
 
 	case searchoverlay.CloseMsg:
 		// Search overlay closed
@@ -157,7 +161,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setFocus(PaneDiffView)
 		return m, nil
 
+	case filepicker.CloseMsg:
+		// File picker closed
+		return m, nil
+
+	case filepicker.FileSelectedMsg:
+		// File selected from picker - load diff and switch to diff pane
+		if msg.File != nil {
+			m.setFocus(PaneDiffView)
+			cmds = append(cmds, m.loadDiff(msg.File.Path))
+		}
+		return m, tea.Batch(cmds...)
+
 	case tea.KeyMsg:
+		// If file picker is active, pass all keys to it
+		if m.filePicker.IsActive() {
+			var cmd tea.Cmd
+			m.filePicker, cmd = m.filePicker.Update(msg)
+			return m, cmd
+		}
+
 		// If search overlay is active, pass all keys to it
 		if m.searchOverlay.IsActive() {
 			var cmd tea.Cmd
@@ -168,6 +191,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global quit
 		if key.Matches(msg, m.keys.Quit) && !m.fileList.IsSearching() {
 			return m, tea.Quit
+		}
+
+		// Global file picker with backslash (works from anywhere)
+		if key.Matches(msg, m.keys.SearchContent) && !m.fileList.IsSearching() {
+			m.openFilePicker()
+			return m, textinput.Blink
 		}
 
 		// Content search with / when in diff pane
@@ -239,6 +268,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.baseBranch = msg.baseBranch
 		m.currentBranch = msg.currentBranch
 
+		// Setup file picker
+		m.filePicker.SetFiles(m.files)
+		m.filePicker.SetRepo(m.repo, m.baseBranch)
+		m.filePicker.SetSize(m.width, m.height)
+
 		// Load first file diff
 		if len(m.files) > 0 {
 			cmds = append(cmds, m.loadDiff(m.files[0].Path))
@@ -275,6 +309,11 @@ func (m *Model) openSearchOverlay() {
 	m.searchOverlay.SetViewMode(m.diffView.GetViewMode())
 	m.searchOverlay.SetSize(m.width, m.height)
 	m.searchOverlay.Open()
+}
+
+func (m *Model) openFilePicker() {
+	m.filePicker.SetSize(m.width, m.height)
+	m.filePicker.Open()
 }
 
 func (m *Model) setFocus(pane Pane) {
@@ -329,6 +368,11 @@ func (m Model) View() string {
 
 	baseView := b.String()
 
+	// Render file picker overlay on top if active
+	if m.filePicker.IsActive() {
+		return m.filePicker.RenderOverlay(baseView)
+	}
+
 	// Render search overlay on top if active
 	if m.searchOverlay.IsActive() {
 		return m.searchOverlay.RenderOverlay(baseView)
@@ -355,9 +399,9 @@ func (m Model) renderHeader() string {
 func (m Model) renderFooter() string {
 	var help string
 	if m.focusedPane == PaneFileList {
-		help = "↑↓ navigate  ←→ expand/collapse  [ ] view  / search files  Enter select  ^g/^h pane  q quit"
+		help = "↑↓ navigate  ←→ expand/collapse  [ ] view  / search  \\ files  Enter select  ^g/^h pane  q quit"
 	} else {
-		help = "↑↓ navigate  [ ] view  / search content  ^g/^h pane  Esc files  q quit"
+		help = "↑↓ navigate  [ ] view  / search  \\ files  ^g/^h pane  Esc files  q quit"
 	}
 	return ui.FooterStyle.
 		Width(m.width).

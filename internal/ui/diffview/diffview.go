@@ -295,6 +295,7 @@ func (m Model) renderBothView(innerWidth, visibleHeight int) []string {
 	}
 
 	lineNumWidth := 4
+
 	for i := m.offset; i < end; i++ {
 		line := m.lines[i]
 		isCursor := i == m.cursor && m.focused
@@ -305,6 +306,7 @@ func (m Model) renderBothView(innerWidth, visibleHeight int) []string {
 		}
 		oldSide := m.renderSide(line.OldLineNum, line.OldContent, line.OldType, sideWidth, lineNumWidth, isCursor)
 		newSide := m.renderSide(line.NewLineNum, line.NewContent, line.NewType, sideWidth, lineNumWidth, isCursor)
+
 		lines = append(lines, cursor+oldSide+" | "+newSide)
 	}
 
