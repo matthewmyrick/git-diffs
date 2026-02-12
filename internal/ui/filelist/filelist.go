@@ -19,7 +19,7 @@ import (
 type ViewMode int
 
 const (
-	ViewFolder ViewMode = iota // Files grouped by folder
+	ViewFolder ViewMode = iota // Files in tree structure
 	ViewType                   // Files grouped by change type
 	ViewRaw                    // Flat list
 )
@@ -29,27 +29,32 @@ type FileSelectMsg struct {
 	File *git.ChangedFile
 }
 
-// Model represents the file list component
-type Model struct {
-	files        []git.ChangedFile
-	displayItems []DisplayItem
-	cursor       int
-	offset       int
-	width        int
-	height       int
-	focused      bool
-	selected     int
-	viewMode     ViewMode
-	searching    bool
-	searchInput  textinput.Model
-	searchQuery  string
+// DisplayItem represents an item in the display list
+type DisplayItem struct {
+	IsFolder    bool
+	IsExpanded  bool
+	FolderPath  string
+	File        *git.ChangedFile
+	Indent      int
+	IsTypeHeader bool
+	TypeHeader  string
 }
 
-// DisplayItem represents an item in the display list (file or folder header)
-type DisplayItem struct {
-	IsHeader bool
-	Header   string
-	File     *git.ChangedFile
+// Model represents the file list component
+type Model struct {
+	files          []git.ChangedFile
+	displayItems   []DisplayItem
+	expandedDirs   map[string]bool
+	cursor         int
+	offset         int
+	width          int
+	height         int
+	focused        bool
+	selected       int
+	viewMode       ViewMode
+	searching      bool
+	searchInput    textinput.Model
+	searchQuery    string
 }
 
 // New creates a new file list model
@@ -59,11 +64,12 @@ func New() Model {
 	ti.CharLimit = 100
 
 	return Model{
-		cursor:      0,
-		offset:      0,
-		selected:    -1,
-		viewMode:    ViewFolder,
-		searchInput: ti,
+		cursor:       0,
+		offset:       0,
+		selected:     -1,
+		viewMode:     ViewFolder,
+		searchInput:  ti,
+		expandedDirs: make(map[string]bool),
 	}
 }
 
@@ -73,17 +79,27 @@ func (m *Model) SetFiles(files []git.ChangedFile) {
 	m.cursor = 0
 	m.offset = 0
 	m.searchQuery = ""
-	m.rebuildDisplayItems()
-	if len(m.displayItems) > 0 {
-		// Find first file item (skip headers)
-		for i, item := range m.displayItems {
-			if !item.IsHeader {
-				m.cursor = i
-				m.selected = i
-				break
+
+	// Expand all directories by default
+	m.expandedDirs = make(map[string]bool)
+	for _, f := range files {
+		parts := strings.Split(filepath.Dir(f.Path), string(filepath.Separator))
+		path := ""
+		for _, part := range parts {
+			if part == "." {
+				continue
 			}
+			if path == "" {
+				path = part
+			} else {
+				path = path + string(filepath.Separator) + part
+			}
+			m.expandedDirs[path] = true
 		}
 	}
+
+	m.rebuildDisplayItems()
+	m.findFirstFile()
 }
 
 // SetSize sets the dimensions of the file list
@@ -116,7 +132,7 @@ func (m Model) IsSearching() bool {
 func (m Model) SelectedFile() *git.ChangedFile {
 	if m.selected >= 0 && m.selected < len(m.displayItems) {
 		item := m.displayItems[m.selected]
-		if !item.IsHeader {
+		if !item.IsFolder && !item.IsTypeHeader && item.File != nil {
 			return item.File
 		}
 	}
@@ -128,31 +144,10 @@ func (m Model) Files() []git.ChangedFile {
 	return m.files
 }
 
-// ViewMode returns the current view mode
-func (m Model) ViewMode() ViewMode {
-	return m.viewMode
-}
-
-func (m Model) viewModeName() string {
-	switch m.viewMode {
-	case ViewFolder:
-		return "Folder"
-	case ViewType:
-		return "Type"
-	case ViewRaw:
-		return "Raw"
-	}
-	return ""
-}
-
 // visibleLines returns how many lines can be displayed
 func (m Model) visibleLines() int {
-	// height - border(2) - title(1) - search(1 if active) - tabs(1)
-	extra := 4
-	if m.searching {
-		extra = 5
-	}
-	visible := m.height - extra
+	// height - border(2) - title(1) - tabs(1) - search(1)
+	visible := m.height - 5
 	if visible < 1 {
 		visible = 1
 	}
@@ -166,11 +161,14 @@ func (m *Model) rebuildDisplayItems() {
 	// Filter files if searching
 	files := m.files
 	if m.searchQuery != "" {
+		// Remove spaces from query to allow "greptile client" to match "greptile_client"
+		query := strings.ReplaceAll(m.searchQuery, " ", "")
+
 		var paths []string
 		for _, f := range m.files {
 			paths = append(paths, f.Path)
 		}
-		matches := fuzzy.Find(m.searchQuery, paths)
+		matches := fuzzy.Find(query, paths)
 		files = nil
 		for _, match := range matches {
 			files = append(files, m.files[match.Index])
@@ -179,7 +177,7 @@ func (m *Model) rebuildDisplayItems() {
 
 	switch m.viewMode {
 	case ViewFolder:
-		m.buildFolderView(files)
+		m.buildTreeView(files)
 	case ViewType:
 		m.buildTypeView(files)
 	case ViewRaw:
@@ -187,39 +185,100 @@ func (m *Model) rebuildDisplayItems() {
 	}
 }
 
-func (m *Model) buildFolderView(files []git.ChangedFile) {
-	// Group by directory
-	folders := make(map[string][]git.ChangedFile)
-	var folderOrder []string
+// TreeNode represents a node in the file tree
+type TreeNode struct {
+	Name     string
+	Path     string
+	IsDir    bool
+	File     *git.ChangedFile
+	Children map[string]*TreeNode
+}
 
-	for _, f := range files {
-		dir := filepath.Dir(f.Path)
-		if dir == "." {
-			dir = "/"
-		}
-		if _, exists := folders[dir]; !exists {
-			folderOrder = append(folderOrder, dir)
-		}
-		folders[dir] = append(folders[dir], f)
+func (m *Model) buildTreeView(files []git.ChangedFile) {
+	// Build tree structure
+	root := &TreeNode{
+		Name:     "",
+		Path:     "",
+		IsDir:    true,
+		Children: make(map[string]*TreeNode),
 	}
 
-	sort.Strings(folderOrder)
+	for i := range files {
+		f := &files[i]
+		parts := strings.Split(f.Path, string(filepath.Separator))
+		current := root
+		pathSoFar := ""
 
-	for _, dir := range folderOrder {
-		m.displayItems = append(m.displayItems, DisplayItem{
-			IsHeader: true,
-			Header:   dir,
-		})
-		for i := range folders[dir] {
-			m.displayItems = append(m.displayItems, DisplayItem{
-				File: &folders[dir][i],
-			})
+		for j, part := range parts {
+			if pathSoFar == "" {
+				pathSoFar = part
+			} else {
+				pathSoFar = pathSoFar + string(filepath.Separator) + part
+			}
+
+			isLast := j == len(parts)-1
+
+			if _, exists := current.Children[part]; !exists {
+				current.Children[part] = &TreeNode{
+					Name:     part,
+					Path:     pathSoFar,
+					IsDir:    !isLast,
+					Children: make(map[string]*TreeNode),
+				}
+			}
+
+			if isLast {
+				current.Children[part].File = f
+				current.Children[part].IsDir = false
+			}
+
+			current = current.Children[part]
 		}
+	}
+
+	// Flatten tree to display items
+	m.flattenTree(root, 0)
+}
+
+func (m *Model) flattenTree(node *TreeNode, indent int) {
+	// Sort children: directories first, then files, both alphabetically
+	var dirs, files []string
+	for name, child := range node.Children {
+		if child.IsDir {
+			dirs = append(dirs, name)
+		} else {
+			files = append(files, name)
+		}
+	}
+	sort.Strings(dirs)
+	sort.Strings(files)
+
+	// Add directories
+	for _, name := range dirs {
+		child := node.Children[name]
+		expanded := m.expandedDirs[child.Path]
+		m.displayItems = append(m.displayItems, DisplayItem{
+			IsFolder:   true,
+			IsExpanded: expanded,
+			FolderPath: child.Path,
+			Indent:     indent,
+		})
+		if expanded {
+			m.flattenTree(child, indent+1)
+		}
+	}
+
+	// Add files
+	for _, name := range files {
+		child := node.Children[name]
+		m.displayItems = append(m.displayItems, DisplayItem{
+			File:   child.File,
+			Indent: indent,
+		})
 	}
 }
 
 func (m *Model) buildTypeView(files []git.ChangedFile) {
-	// Group by status
 	types := map[git.FileStatus][]git.ChangedFile{
 		git.StatusModified: {},
 		git.StatusAdded:    {},
@@ -251,12 +310,13 @@ func (m *Model) buildTypeView(files []git.ChangedFile) {
 	for _, o := range order {
 		if len(types[o.status]) > 0 {
 			m.displayItems = append(m.displayItems, DisplayItem{
-				IsHeader: true,
-				Header:   fmt.Sprintf("%s (%d)", o.name, len(types[o.status])),
+				IsTypeHeader: true,
+				TypeHeader:   fmt.Sprintf("%s (%d)", o.name, len(types[o.status])),
 			})
 			for i := range types[o.status] {
 				m.displayItems = append(m.displayItems, DisplayItem{
-					File: &types[o.status][i],
+					File:   &types[o.status][i],
+					Indent: 1,
 				})
 			}
 		}
@@ -293,14 +353,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.searchQuery = ""
 				m.searchInput.SetValue("")
 				m.rebuildDisplayItems()
+				m.findFirstFile()
 				return m, nil
 			case "enter":
 				m.searching = false
 				m.searchInput.Blur()
-				// Keep the filter active, just exit search mode
 				return m, nil
 			case "up", "down":
-				// Allow navigation while searching
 				m.searching = false
 				m.searchInput.Blur()
 			default:
@@ -312,14 +371,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					m.rebuildDisplayItems()
 					m.cursor = 0
 					m.offset = 0
-					// Find first file
-					for i, item := range m.displayItems {
-						if !item.IsHeader {
-							m.cursor = i
-							m.selected = i
-							break
-						}
-					}
+					m.findFirstFile()
 				}
 				return m, cmd
 			}
@@ -339,7 +391,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, textinput.Blink
 
 		case key.Matches(msg, keys.BracketLeft):
-			// Previous view mode
 			if m.viewMode > 0 {
 				m.viewMode--
 			} else {
@@ -351,7 +402,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.findFirstFile()
 
 		case key.Matches(msg, keys.BracketRight):
-			// Next view mode
 			if m.viewMode < ViewRaw {
 				m.viewMode++
 			} else {
@@ -401,9 +451,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case key.Matches(msg, keys.Enter):
-			if m.selected >= 0 && m.selected < len(m.displayItems) {
-				item := m.displayItems[m.selected]
-				if !item.IsHeader && item.File != nil {
+			if m.cursor >= 0 && m.cursor < len(m.displayItems) {
+				item := m.displayItems[m.cursor]
+				// Toggle folder expand/collapse
+				if item.IsFolder {
+					m.expandedDirs[item.FolderPath] = !m.expandedDirs[item.FolderPath]
+					m.rebuildDisplayItems()
+					// Find the folder again after rebuild
+					for i, di := range m.displayItems {
+						if di.IsFolder && di.FolderPath == item.FolderPath {
+							m.cursor = i
+							m.selected = i
+							break
+						}
+					}
+				} else if item.File != nil {
 					return m, func() tea.Msg {
 						return FileSelectMsg{File: item.File}
 					}
@@ -425,11 +487,14 @@ func (m *Model) moveCursor(delta int) {
 	if newCursor >= len(m.displayItems) {
 		newCursor = len(m.displayItems) - 1
 	}
+	if newCursor < 0 {
+		newCursor = 0
+	}
 
 	m.cursor = newCursor
 
-	// Skip headers
-	if m.cursor >= 0 && m.cursor < len(m.displayItems) && m.displayItems[m.cursor].IsHeader {
+	// Skip type headers (but not folders - those are selectable)
+	if m.cursor >= 0 && m.cursor < len(m.displayItems) && m.displayItems[m.cursor].IsTypeHeader {
 		if delta > 0 && m.cursor < len(m.displayItems)-1 {
 			m.cursor++
 		} else if delta < 0 && m.cursor > 0 {
@@ -439,7 +504,6 @@ func (m *Model) moveCursor(delta int) {
 
 	m.selected = m.cursor
 
-	// Adjust offset
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	} else if m.cursor >= m.offset+visibleHeight {
@@ -449,7 +513,7 @@ func (m *Model) moveCursor(delta int) {
 
 func (m *Model) findFirstFile() {
 	for i, item := range m.displayItems {
-		if !item.IsHeader {
+		if !item.IsTypeHeader {
 			m.cursor = i
 			m.selected = i
 			return
@@ -461,21 +525,19 @@ func (m *Model) findNearestFile() {
 	if m.cursor < 0 || m.cursor >= len(m.displayItems) {
 		return
 	}
-	if !m.displayItems[m.cursor].IsHeader {
+	if !m.displayItems[m.cursor].IsTypeHeader {
 		m.selected = m.cursor
 		return
 	}
-	// Search forward first
 	for i := m.cursor; i < len(m.displayItems); i++ {
-		if !m.displayItems[i].IsHeader {
+		if !m.displayItems[i].IsTypeHeader {
 			m.cursor = i
 			m.selected = i
 			return
 		}
 	}
-	// Then backward
 	for i := m.cursor; i >= 0; i-- {
-		if !m.displayItems[i].IsHeader {
+		if !m.displayItems[i].IsTypeHeader {
 			m.cursor = i
 			m.selected = i
 			return
@@ -494,7 +556,7 @@ func (m Model) View() string {
 
 	var lines []string
 
-	// Title with file count
+	// Title
 	titleText := fmt.Sprintf("FILES (%d)", len(m.files))
 	lines = append(lines, ui.PaneTitleStyle.Render(titleText))
 
@@ -502,10 +564,14 @@ func (m Model) View() string {
 	tabs := m.renderTabs(innerWidth)
 	lines = append(lines, tabs)
 
-	// Search bar (if active)
+	// Search bar (always visible)
+	searchStyle := lipgloss.NewStyle().Foreground(ui.ColorMuted)
 	if m.searching {
-		searchBar := m.searchInput.View()
-		lines = append(lines, searchBar)
+		lines = append(lines, m.searchInput.View())
+	} else if m.searchQuery != "" {
+		lines = append(lines, searchStyle.Render("/ "+m.searchQuery+" (esc to clear)"))
+	} else {
+		lines = append(lines, searchStyle.Render("/ to search"))
 	}
 
 	if len(m.displayItems) == 0 {
@@ -515,7 +581,6 @@ func (m Model) View() string {
 			lines = append(lines, ui.EmptyStateStyle.Render("No changes"))
 		}
 	} else {
-		// Calculate visible range
 		end := m.offset + visibleHeight
 		if end > len(m.displayItems) {
 			end = len(m.displayItems)
@@ -523,10 +588,12 @@ func (m Model) View() string {
 
 		for i := m.offset; i < end; i++ {
 			item := m.displayItems[i]
-			if item.IsHeader {
-				lines = append(lines, m.renderHeader(item.Header, innerWidth))
+			if item.IsFolder {
+				lines = append(lines, m.renderFolderLine(item, i, innerWidth))
+			} else if item.IsTypeHeader {
+				lines = append(lines, m.renderTypeHeader(item.TypeHeader, innerWidth))
 			} else {
-				lines = append(lines, m.renderFileLine(item.File, i, innerWidth))
+				lines = append(lines, m.renderFileLine(item, i, innerWidth))
 			}
 		}
 	}
@@ -570,21 +637,50 @@ func (m Model) renderTabs(width int) string {
 		}
 	}
 
-	tabLine := strings.Join(tabs, " ")
-	hint := lipgloss.NewStyle().Foreground(ui.ColorMuted).Render(" [/]")
-	return tabLine + hint
+	return strings.Join(tabs, " ")
 }
 
-func (m Model) renderHeader(header string, width int) string {
+func (m Model) renderFolderLine(item DisplayItem, idx int, width int) string {
+	indent := strings.Repeat("  ", item.Indent)
+
+	icon := "▶ "
+	if item.IsExpanded {
+		icon = "▼ "
+	}
+
+	folderName := filepath.Base(item.FolderPath)
+
+	cursor := "  "
+	if idx == m.cursor && m.focused {
+		cursor = "> "
+	}
+
+	line := fmt.Sprintf("%s%s%s%s", cursor, indent, icon, folderName)
+
+	var style lipgloss.Style
+	if idx == m.cursor && m.focused {
+		style = ui.FileItemSelectedStyle
+	} else {
+		style = lipgloss.NewStyle().Foreground(ui.ColorSecondary).Bold(true)
+	}
+
+	return style.Render(line)
+}
+
+func (m Model) renderTypeHeader(header string, width int) string {
 	style := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ui.ColorSecondary).
-		Background(ui.ColorBackground).
-		Width(width)
+		Background(ui.ColorBackground)
 	return style.Render("  " + header)
 }
 
-func (m Model) renderFileLine(file *git.ChangedFile, idx int, width int) string {
+func (m Model) renderFileLine(item DisplayItem, idx int, width int) string {
+	file := item.File
+	if file == nil {
+		return ""
+	}
+
 	var statusStyle lipgloss.Style
 	switch file.Status {
 	case git.StatusAdded:
@@ -606,13 +702,15 @@ func (m Model) renderFileLine(file *git.ChangedFile, idx int, width int) string 
 		cursor = "> "
 	}
 
-	// Show just filename in folder view, full path otherwise
+	indent := strings.Repeat("  ", item.Indent)
+
+	// Show just filename in folder/type view, full path in raw
 	path := file.Path
-	if m.viewMode == ViewFolder {
+	if m.viewMode == ViewFolder || m.viewMode == ViewType {
 		path = filepath.Base(file.Path)
 	}
 
-	maxPathWidth := width - 6
+	maxPathWidth := width - 6 - len(indent)
 	if maxPathWidth < 10 {
 		maxPathWidth = 10
 	}
@@ -620,7 +718,7 @@ func (m Model) renderFileLine(file *git.ChangedFile, idx int, width int) string 
 		path = "..." + path[len(path)-maxPathWidth+3:]
 	}
 
-	line := fmt.Sprintf("%s%s %s", cursor, status, path)
+	line := fmt.Sprintf("%s%s%s %s", cursor, indent, status, path)
 
 	var style lipgloss.Style
 	if idx == m.cursor && m.focused {

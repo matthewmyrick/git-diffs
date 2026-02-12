@@ -165,24 +165,18 @@ func (m Model) View() string {
 		lines = append(lines, ui.EmptyStateStyle.Render("Select a file to view diff"))
 	} else {
 		// Calculate side widths
-		sideWidth := (innerWidth - 3) / 2 // -3 for separator " │ "
+		sideWidth := (innerWidth - 3) / 2 // -3 for separator " | "
 		if sideWidth < 10 {
 			sideWidth = 10
 		}
 
-		// Column headers
-		oldHeader := lipgloss.NewStyle().
-			Width(sideWidth).
-			Bold(true).
-			Foreground(ui.ColorDanger).
-			Render("OLD")
-		newHeader := lipgloss.NewStyle().
-			Width(sideWidth).
-			Bold(true).
-			Foreground(ui.ColorSuccess).
-			Render("NEW")
-		lines = append(lines, oldHeader+" │ "+newHeader)
-		lines = append(lines, strings.Repeat("─", sideWidth)+"─┼─"+strings.Repeat("─", sideWidth))
+		// Column headers - pad manually to match content width
+		oldHeaderText := "OLD" + strings.Repeat(" ", sideWidth-3)
+		newHeaderText := "NEW" + strings.Repeat(" ", sideWidth-3)
+		oldHeader := lipgloss.NewStyle().Bold(true).Foreground(ui.ColorDanger).Render(oldHeaderText)
+		newHeader := lipgloss.NewStyle().Bold(true).Foreground(ui.ColorSuccess).Render(newHeaderText)
+		lines = append(lines, oldHeader+" | "+newHeader)
+		lines = append(lines, strings.Repeat("-", sideWidth)+"-+-"+strings.Repeat("-", sideWidth))
 
 		// Content lines
 		end := m.offset + visibleHeight
@@ -195,7 +189,7 @@ func (m Model) View() string {
 			line := m.lines[i]
 			oldSide := m.renderSide(line.OldLineNum, line.OldContent, line.OldType, sideWidth, lineNumWidth)
 			newSide := m.renderSide(line.NewLineNum, line.NewContent, line.NewType, sideWidth, lineNumWidth)
-			lines = append(lines, oldSide+" │ "+newSide)
+			lines = append(lines, oldSide+" | "+newSide)
 		}
 
 		// Scroll indicator
